@@ -410,6 +410,28 @@ class StockUpdaterApp:
             self.log("🔧 Limpiando valores NaN...")
             tienda_guardar = tienda_guardar.fillna('')
 
+            # Limpiar NaN, "NaN", "nan" y configurar valores por defecto
+            self.log("🔧 Limpiando valores NaN y configurando valores por defecto...")
+
+            # Reemplazar strings "nan", "NaN", "None" por NaN real
+            tienda_guardar = tienda_guardar.replace(['nan', 'NaN', 'NAN', 'None', 'none'], pd.NA)
+
+            # Configurar valores por defecto según columna
+            valores_defecto = {
+                'Nombre de propiedad 1': 'Modelo único',
+                'Valor de propiedad 1': 'único',                    
+            }
+
+            # Aplicar valores por defecto
+            for columna, valor_defecto in valores_defecto.items():
+                if columna in tienda_guardar.columns:
+                    tienda_guardar[columna] = tienda_guardar[columna].fillna(valor_defecto)
+
+            # Cualquier otro NaN restante lo dejamos vacío
+            tienda_guardar = tienda_guardar.fillna('')
+
+            self.log("✅ Valores NaN limpiados y configurados")
+
             # Guardar como CSV
             tienda_guardar.to_csv(
                 output_path,
