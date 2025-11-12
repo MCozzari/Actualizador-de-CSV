@@ -276,27 +276,28 @@ class StockUpdaterApp:
             almacen = pd.read_excel(
                 self.excel_path.get(), 
                 sheet_name='productos_db', 
-                header=2
+                header=2,
+                dtype=str  # TODO como string
             )
             self.log(f"✅ Excel procesado: {len(almacen):,} productos encontrados")
 
-            # AGREGAR ESTO:
-            # Asegurar que STOCK y PRECIO VENTA sean numéricos
-            self.log("🔧 Convirtiendo columnas numéricas del Excel...")
-            almacen['STOCK'] = pd.to_numeric(almacen['STOCK'], errors='coerce')
-            almacen['PRECIO VENTA'] = pd.to_numeric(almacen['PRECIO VENTA'], errors='coerce')
-            
-            # Leer archivo CSV
+
             self.update_progress("Leyendo archivo CSV...")
             self.log("🔄 Leyendo archivo CSV...")
-            
+
+            # Leer archivo CSV manteniendo tipos originales
             tienda = pd.read_csv(
                 self.csv_path.get(), 
                 encoding='cp1252', 
-                sep=';'
+                sep=';',
+                dtype=str,  # TODO como string
+                keep_default_na=False,  # No convertir a NaN
+                quotechar='"',
+                doublequote=True,
+                engine='python'
             )
-            self.log(f"✅ CSV procesado: {len(tienda):,} productos encontrados")
 
+            self.log(f"✅ CSV procesado: {len(tienda):,} productos encontrados")
             # Limpiar y convertir columnas numéricas (formato USA)
             self.log("🔧 Limpiando formato de números (comas de miles, punto decimal)...")
 
@@ -349,21 +350,44 @@ class StockUpdaterApp:
             # Actualizar stock y precios
             self.update_progress("Actualizando stock y precios...")
             self.log("🔄 Actualizando valores de stock y precios...")
-            
-            # Crear mapeos usando los índices
-            self.log("📊 Creando mapeos de datos...")
 
-            # Guardar valores actuales
-            stock_actual = tienda['Stock'].copy()
-            precio_actual = tienda['Precio'].copy()
+            # Crear mapeos desde el almacén
+            almacen_stock_map = almacen['STOCK'].to_dict()
+            almacen_precio_map = almacen['PRECIO VENTA'].to_dict()
+
+            # Crear diccionarios con códigos normalizados (mayúsculas)
+            almacen_stock_upper = {str(k).upper().strip(): v for k, v in almacen_stock_map.items()}
+            almacen_precio_upper = {str(k).upper().strip(): v for k, v in almacen_precio_map.items()}
+
+            # Crear columna temporal normalizada para matching
+            tienda['_codigo_temp'] = tienda['Código de barras'].str.upper().str.strip()
 
             # Mapear nuevos valores
-            stock_nuevo = tienda['Código de barras'].map(almacen['STOCK'])
-            precio_nuevo = tienda['Código de barras'].map(almacen['PRECIO VENTA'])
+            stock_nuevo = tienda['_codigo_temp'].map(almacen_stock_upper)
+            precio_nuevo = tienda['_codigo_temp'].map(almacen_precio_upper)
 
-            # Actualizar solo donde hay coincidencia, mantener valores anteriores donde no hay
-            tienda['Stock'] = stock_nuevo.fillna(stock_actual)
-            tienda['Precio'] = precio_nuevo.fillna(precio_actual)
+            # Actualizar SOLO donde hay coincidencia (preservando tipo string)
+            mask_stock = stock_nuevo.notna()
+            mask_precio = precio_nuevo.notna()
+
+            if mask_stock.any():
+                tienda.loc[mask_stock, 'Stock'] = stock_nuevo[mask_stock].apply(
+                    lambda x: str(x) if pd.notna(x) else ''
+                )
+
+            if mask_precio.any():
+                tienda.loc[mask_precio, 'Precio'] = precio_nuevo[mask_precio].apply(
+                    lambda x: str(x) if pd.notna(x) else ''
+                )
+                
+            # Eliminar columna temporal
+            tienda.drop('_codigo_temp', axis=1, inplace=True)
+
+            # Contar actualizaciones
+            actualizados_stock = mask_stock.sum()
+            actualizados_precio = mask_precio.sum()
+            self.log(f"✅ Productos con nuevo stock: {actualizados_stock}")
+            self.log(f"✅ Productos con nuevo precio: {actualizados_precio}")
 
             # Contar cuántos se actualizaron realmente
             actualizados_stock = stock_nuevo.notna().sum()
@@ -394,27 +418,17 @@ class StockUpdaterApp:
             
             # Convertir números de vuelta a formato USA antes de guardar
             self.log("🔧 Convirtiendo a formato con comas de miles...")
-            tienda_guardar = tienda.copy()
 
-            if 'Stock' in tienda_guardar.columns:
-                tienda_guardar['Stock'] = tienda_guardar['Stock'].apply(
-                    lambda x: f"{x:,.0f}" if pd.notna(x) and x == int(x) else f"{x:,.2f}" if pd.notna(x) else ''
-                )
-
-            if 'Precio' in tienda_guardar.columns:
-                tienda_guardar['Precio'] = tienda_guardar['Precio'].apply(
-                    lambda x: f"{x:,.2f}" if pd.notna(x) else ''
-                )
 
             # Reemplazar todos los NaN por string vacío antes de guardar
             self.log("🔧 Limpiando valores NaN...")
-            tienda_guardar = tienda_guardar.fillna('')
+            tienda = tienda.fillna('')
 
             # Limpiar NaN, "NaN", "nan" y configurar valores por defecto
             self.log("🔧 Limpiando valores NaN y configurando valores por defecto...")
 
             # Reemplazar strings "nan", "NaN", "None" por NaN real
-            tienda_guardar = tienda_guardar.replace(['nan', 'NaN', 'NAN', 'None', 'none'], pd.NA)
+            tienda = tienda.replace(['nan', 'NaN', 'NAN', 'None', 'none'], pd.NA)
 
             # Configurar valores por defecto según columna
             valores_defecto = {
@@ -424,22 +438,21 @@ class StockUpdaterApp:
 
             # Aplicar valores por defecto
             for columna, valor_defecto in valores_defecto.items():
-                if columna in tienda_guardar.columns:
-                    tienda_guardar[columna] = tienda_guardar[columna].fillna(valor_defecto)
+                if columna in tienda.columns:
+                    tienda[columna] = tienda[columna].fillna(valor_defecto)
 
             # Cualquier otro NaN restante lo dejamos vacío
-            tienda_guardar = tienda_guardar.fillna('')
+            tienda = tienda.fillna('')
 
             self.log("✅ Valores NaN limpiados y configurados")
 
-            # Guardar como CSV
-            tienda_guardar.to_csv(
+            # Guardar directamente sin conversiones
+            tienda.to_csv(
                 output_path,
                 index=False,
                 sep=';',
                 encoding='cp1252',
-                quoting=csv.QUOTE_NONNUMERIC,
-                quotechar='"'
+                quoting=csv.QUOTE_MINIMAL
             )
             
             # Calcular estadísticas
@@ -448,14 +461,19 @@ class StockUpdaterApp:
             productos_sin_stock = tienda['Stock'].isna().sum()
             productos_con_precio = tienda['Precio'].notna().sum()
             productos_sin_precio = tienda['Precio'].isna().sum()
-            productos_stock_cero = (tienda['Stock'] == 0).sum()
-            productos_stock_positivo = (tienda['Stock'] > 0).sum()
-            productos_stock_negativo = (tienda['Stock'] < 0).sum()
-            
+
+            # Convertir temporalmente a numérico SOLO para estadísticas
+            stock_numerico = pd.to_numeric(tienda['Stock'], errors='coerce')
+            precio_numerico = pd.to_numeric(tienda['Precio'], errors='coerce')
+
+            productos_stock_cero = (stock_numerico == 0).sum()
+            productos_stock_positivo = (stock_numerico > 0).sum()
+            productos_stock_negativo = (stock_numerico < 0).sum()
+
             # Calcular precios promedio
-            precio_promedio = tienda['Precio'].mean()
-            precio_minimo = tienda['Precio'].min()
-            precio_maximo = tienda['Precio'].max()
+            precio_promedio = precio_numerico.mean()
+            precio_minimo = precio_numerico.min()
+            precio_maximo = precio_numerico.max()
             
             # Mostrar resultados
             self.log("")
