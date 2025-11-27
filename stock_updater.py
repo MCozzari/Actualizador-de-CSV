@@ -446,14 +446,29 @@ class StockUpdaterApp:
 
             self.log("✅ Valores NaN limpiados y configurados")
 
-            # Guardar directamente sin conversiones
-            tienda.to_csv(
-                output_path,
-                index=False,
-                sep=';',
-                encoding='cp1252',
-                quoting=csv.QUOTE_MINIMAL
-            )
+            # Guardar con comillas solo en campos con espacios
+            self.log("💾 Guardando archivo con formato correcto...")
+
+            with open(output_path, 'w', newline='', encoding='cp1252') as f:
+                writer = csv.writer(f, delimiter=';', quoting=csv.QUOTE_NONE, quotechar='"', escapechar='\\')
+                
+                # Escribir headers con comillas solo si tienen espacios
+                headers_formateados = [f'"{col}"' if ' ' in str(col) else col for col in tienda.columns]
+                f.write(';'.join(headers_formateados) + '\n')
+                
+                # Escribir datos fila por fila
+                for _, row in tienda.iterrows():
+                    fila_formateada = []
+                    for valor in row:
+                        valor_str = str(valor) if pd.notna(valor) else ''
+                        # Agregar comillas solo si tiene espacios
+                        if ' ' in valor_str:
+                            fila_formateada.append(f'"{valor_str}"')
+                        else:
+                            fila_formateada.append(valor_str)
+                    f.write(';'.join(fila_formateada) + '\n')
+
+            self.log("✅ Archivo guardado correctamente")
             
             # Calcular estadísticas
             total_productos = len(tienda)
